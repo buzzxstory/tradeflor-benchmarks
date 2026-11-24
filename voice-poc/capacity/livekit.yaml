@@ -19,5 +19,8 @@ turn:
   key_file: /etc/lk/turn.key
   relay_range_start: 31000
   relay_range_end: 31999
+  # PoC only: on the runner the SFU has private addresses (10.x / docker 172.17.x), which the embedded TURN
+  # refuses to relay to by default (SSRF protection, pkg/service/turnrelay.go isRestrictedPeerIP).
+  allow_restricted_peer_cidrs: ["10.0.0.0/8", "172.16.0.0/12"]
 logging:
   level: info

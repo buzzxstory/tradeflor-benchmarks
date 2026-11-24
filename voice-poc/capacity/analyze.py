@@ -33,7 +33,7 @@ def scrape(fn):
         if not m or m.group(3) == "NaN":
             continue
         name = m.group(1)
-        if re.search(r"packet|nack|jitter|rtt|loss|pli|forward|bytes", name) and not name.endswith("_bucket"):
+        if name.startswith("livekit_") and not name.endswith("_bucket"):
             tot[name] = tot.get(name, 0.0) + float(m.group(3))
     return tot
 
@@ -161,7 +161,17 @@ def phase_stats(out, rows, p):
         "udp_err": udp_err, "runner_cpu_avg": avg([i["runner_cpu"] for i in iv]),
         "runner_cpu_max": max([i["runner_cpu"] for i in iv]) if iv else 0,
         "srv_log_errors": int(p.get("srv_errors") or 0), **lk,
+        "prom": metric_deltas(out, p["name"]),
     }
+
+
+def prom_cell(s):
+    p = s.get("prom") or {}
+    loss = p.get("livekit_packet_loss_percent (avg)")
+    jit = p.get("livekit_jitter_us (avg)")
+    rtt = p.get("livekit_rtt_ms (avg)")
+    f = lambda v, k=1.0: "-" if v is None else f"{v / k:.2f}"
+    return f"{f(loss)} / {f(jit, 1000)} / {f(rtt)}"
 
 
 def gate(out, prefix):
@@ -198,15 +208,15 @@ def report(out):
          "Runner CPU = whole machine busy, % of one core (" + str(NCPU) + " cores = " + str(NCPU * 100) + "%); "
          "runner minus server is roughly the generator + sampler.", "",
          "| N | pattern | rooms | mapping per room | srv CPU avg/max % | mem avg/max MB | lo Mbit/s | UDP pps in/out "
-         "| UDP err | tracks rx/expected | rx kbit/s (sum) | dropped pkts (worst room %) | tester errors / connect failures | runner CPU avg/max % |",
-         "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+         "| UDP err | tracks rx/expected | rx kbit/s (sum) | dropped pkts (worst room %) | tester errors / connect failures | runner CPU avg/max % | server-side loss % / jitter ms / RTT ms |",
+         "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for s in stats:
         if not s["name"].startswith("cap-"):
             continue
         L.append(f"| {s['N']} | {s['pattern']} | {s['rooms']} | {s['mapping']} | {s['srv_cpu_avg']:.0f} / {s['srv_cpu_max']:.0f} "
                  f"| {s['mem_avg']:.0f} / {s['mem_max']:.0f} | {s['lo_mbit']:.1f} | {s['udp_in_pps']:.0f} / {s['udp_out_pps']:.0f} "
                  f"| {s['udp_err']} | {s['tracks']}/{s['expected']} | {s['rx_kbps']:.0f} | {s['dropped_pkts']} ({s['worst_room_loss_pct']:.2f}%) "
-                 f"| {s['tester_errors']} / {s['connect_failures']} | {s['runner_cpu_avg']:.0f} / {s['runner_cpu_max']:.0f} |")
+                 f"| {s['tester_errors']} / {s['connect_failures']} | {s['runner_cpu_avg']:.0f} / {s['runner_cpu_max']:.0f} | {prom_cell(s)} |")
     other = [s for s in stats if not s["name"].startswith("cap-")]
     if other:
         L += ["", "## TURN and impairment phases", "",

@@ -65,14 +65,14 @@ grep -E "Test Case .*(passed|failed|skipped)|POC_RESULT" "$RAW/test.log" | sed -
 r '```'
 xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/poc.xcresult" > "$RAW/xcresult-summary.json" 2>/dev/null || true
 DUPS_TEST=$(grep -c "implemented in both" "$RAW/test.log")
-DUPS_LOG=$(grep -c "implemented in both" "$RAW/sim-objc-dup-log.txt")
+DUPS_LOG=$(grep -v "Filtering the log data" "$RAW/sim-objc-dup-log.txt" | grep -c "implemented in both")
 DUPS_LAUNCH=$(grep -c "implemented in both" "$RAW/app-launch-console.txt")
 r ""; r "## \"Class X is implemented in both\" warnings"
 r "- xcodebuild test log: $DUPS_TEST lines"
 r "- simulator unified log (log stream during tests): $DUPS_LOG lines"
 r "- app launch console (stderr, 15 s): $DUPS_LAUNCH lines"
 if [ $((DUPS_TEST + DUPS_LOG + DUPS_LAUNCH)) -gt 0 ]; then
-  r '```'; grep -h "implemented in both" "$RAW/test.log" "$RAW/sim-objc-dup-log.txt" "$RAW/app-launch-console.txt" | sed -E 's#/Users/[^ ]*/#.../#g' | sort -u | head -20 >> "$MD"; r '```'
+  r '```'; grep -h "implemented in both" "$RAW/test.log" "$RAW/sim-objc-dup-log.txt" "$RAW/app-launch-console.txt" | grep -v "Filtering the log data" | sed -E 's#/Users/[^ ]*/#.../#g' | sort -u | head -20 >> "$MD"; r '```'
 fi
 
 # ---------- device Release builds (unsigned) for sizes and symbols; binaries never uploaded ----------

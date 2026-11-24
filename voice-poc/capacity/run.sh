@@ -122,7 +122,7 @@ echo "--- server log lines about the permission test ---" >> "$RAW/perm.json"; c
 cat "$RAW/perm.json"
 
 # ---------- 3/4. capacity steps ----------
-for N in 8 24 40 80 200 400 800; do
+for N in 8 24 40 80 200 304 400 800; do
   if [ "$N" = 800 ]; then
     python3 "$HERE/analyze.py" gate "$OUT" "cap-400-" | tee -a "$RAW/run.log" || { log "800 skipped: the 400 step hit >=140% CPU or errors"; break; }
   fi

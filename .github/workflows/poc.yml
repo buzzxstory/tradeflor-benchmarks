@@ -8,6 +8,10 @@ on:
         description: "Run the group voice PoC jobs"
         type: boolean
         default: false
+      ios:
+        description: "Also run the macOS/iOS job"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -37,7 +41,7 @@ jobs:
             ${{ runner.temp }}/poc-capacity/raw/
 
   poc-ios:
-    if: ${{ inputs.poc }}
+    if: ${{ inputs.poc && inputs.ios }}
     runs-on: macos-26
     timeout-minutes: 45
     permissions:
@@ -74,7 +78,7 @@ jobs:
           POC_LK_URL: ws://127.0.0.1:7880
         run: |
           bash voice-poc/scripts/ios-poc.sh
-          { echo; echo "## Local dev server for the connect test"; echo '```'; cat "$RUNNER_TEMP/lks-version.txt"; grep -iE 'ios-sim|participant|error' "$RUNNER_TEMP/lks.log" | head -30; echo '```'; } >> "$OUT/poc-ios.md"
+          { echo; echo "## Local dev server for the connect test"; echo '```'; cat "$RUNNER_TEMP/lks-version.txt"; grep -E 'participant active|mediaTrack published|no permission|ERROR' "$RUNNER_TEMP/lks.log" | cut -c1-300 | head -20; echo '```'; } >> "$OUT/poc-ios.md"
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
