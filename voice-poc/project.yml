@@ -1,0 +1,74 @@
+# Throwaway proof-of-concept project (group voice SDK compatibility). Not part of the app; never merged.
+name: PoCVoice
+options:
+  bundleIdPrefix: com.example.poc
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    TARGETED_DEVICE_FAMILY: "1"
+    GENERATE_INFOPLIST_FILE: YES
+    INFOPLIST_KEY_UILaunchScreen_Generation: YES
+    INFOPLIST_KEY_NSMicrophoneUsageDescription: "PoC microphone test"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+packages:
+  # the stasel WebRTC version under evaluation
+  WebRTC:
+    url: https://github.com/stasel/WebRTC
+    exactVersion: 125.0.0
+  LiveKit:
+    url: https://github.com/livekit/client-sdk-swift
+    exactVersion: 2.19.0
+targets:
+  PoCVoice:
+    type: application
+    platform: iOS
+    sources: [PoCVoice]
+    info:
+      path: PoCVoice/Info.plist
+      properties:
+        UILaunchScreen: {}
+        NSMicrophoneUsageDescription: "PoC microphone test"
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.poc.voice
+        GENERATE_INFOPLIST_FILE: NO
+    dependencies:
+      - package: WebRTC
+      - package: LiveKit
+  PoCVoiceNoLK:
+    type: application
+    platform: iOS
+    sources: [PoCVoiceNoLK]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.poc.voicenolk
+    dependencies:
+      - package: WebRTC
+  PoCVoiceTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [PoCVoiceTests]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.poc.voice.tests
+    dependencies:
+      - target: PoCVoice
+schemes:
+  PoCVoice:
+    build:
+      targets:
+        PoCVoice: all
+        PoCVoiceTests: [test]
+    test:
+      targets: [PoCVoiceTests]
+  PoCVoiceNoLK:
+    build:
+      targets:
+        PoCVoiceNoLK: all

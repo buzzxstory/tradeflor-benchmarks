@@ -1,0 +1,86 @@
+name: Group voice PoC
+# Isolated proof of concept on free GitHub-hosted standard runners (public repo). Dev keys only, no repo secrets,
+# no deployment. Artifacts: measurement results and logs only (no binaries), kept 3 days.
+on:
+  workflow_dispatch:
+    inputs:
+      poc:
+        description: "Run the group voice PoC jobs"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  poc-capacity:
+    if: ${{ inputs.poc }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Capacity, permission, TURN and impairment benchmark
+        env:
+          OUT: ${{ runner.temp }}/poc-capacity
+        run: bash voice-poc/capacity/run.sh
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: poc-capacity
+          retention-days: 3
+          path: |
+            ${{ runner.temp }}/poc-capacity/poc-capacity.md
+            ${{ runner.temp }}/poc-capacity/poc-capacity.json
+            ${{ runner.temp }}/poc-capacity/raw/
+
+  poc-ios:
+    if: ${{ inputs.poc }}
+    runs-on: macos-15
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.26.x"
+          cache: false
+      - name: Xcode 16.3+ (LiveKit Swift 2.19.0 uses swift-tools 6.1)
+        run: |
+          xcodebuild -version
+          ls -d /Applications/Xcode*.app
+          cur=$(xcodebuild -version | awk 'NR==1{print $2}')
+          if [ "$(printf '%s\n%s\n' "$cur" 16.3 | sort -V | head -1)" != 16.3 ]; then
+            best=$(ls -d /Applications/Xcode_16.*.app | sort -V | tail -1)
+            sudo xcode-select -s "$best/Contents/Developer"
+          fi
+          xcodebuild -version
+      - name: livekit-server v1.13.10 for macOS (no darwin asset in the release, so built from the official tag)
+        run: |
+          git clone -q --depth 1 --branch v1.13.10 https://github.com/livekit/livekit "$RUNNER_TEMP/lks"
+          SHA=$(git -C "$RUNNER_TEMP/lks" rev-parse HEAD)
+          echo "livekit v1.13.10 commit $SHA" | tee "$RUNNER_TEMP/lks-version.txt"
+          [ "$SHA" = e5655ac20267fa5005dccaf3f0e3bfc3ea688c07 ] || { echo "tag commit mismatch"; exit 1; }
+          (cd "$RUNNER_TEMP/lks" && go build -o "$RUNNER_TEMP/livekit-server" ./cmd/server) 2>&1 | tail -5
+          "$RUNNER_TEMP/livekit-server" --version | tee -a "$RUNNER_TEMP/lks-version.txt"
+          nohup "$RUNNER_TEMP/livekit-server" --dev --bind 127.0.0.1 > "$RUNNER_TEMP/lks.log" 2>&1 &
+          for i in $(seq 1 30); do curl -fs http://127.0.0.1:7880 && break; sleep 1; done
+      - name: iOS compatibility PoC
+        env:
+          OUT: ${{ runner.temp }}/poc-ios
+          POC_LK_URL: ws://127.0.0.1:7880
+        run: |
+          bash voice-poc/scripts/ios-poc.sh
+          { echo; echo "## Local dev server for the connect test"; echo '```'; cat "$RUNNER_TEMP/lks-version.txt"; grep -iE 'ios-sim|participant|error' "$RUNNER_TEMP/lks.log" | head -30; echo '```'; } >> "$OUT/poc-ios.md"
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: poc-ios
+          retention-days: 3
+          path: |
+            ${{ runner.temp }}/poc-ios/poc-ios.md
+            ${{ runner.temp }}/poc-ios/raw/

@@ -1,0 +1,22 @@
+# Throwaway livekit-server config for the isolated GitHub-runner benchmark (dev keys only, never production).
+port: 7880
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 60000
+  use_external_ip: false
+keys:
+  devkey: secret
+# Built-in TURN, on ports that do not clash with the production coturn layout (3478 / 5349 / relay 49160-49260)
+turn:
+  enabled: true
+  domain: turn.poc.local
+  udp_port: 3479
+  tls_port: 5350
+  external_tls: false
+  cert_file: /etc/lk/turn.crt
+  key_file: /etc/lk/turn.key
+  relay_range_start: 31000
+  relay_range_end: 31999
+logging:
+  level: info
