@@ -11,6 +11,46 @@ import sys
 NCPU = os.cpu_count() or 1
 
 
+def set_ncpu(out):
+    """runner core count from the run itself (the analysis may run elsewhere)"""
+    global NCPU
+    fn = os.path.join(out, "raw", "hardware-summary.txt")
+    if os.path.exists(fn):
+        for line in open(fn):
+            if line.startswith("nproc:"):
+                NCPU = int(line.split(":")[1])
+
+
+METRIC_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+([-+0-9.eE]+|NaN)$")
+
+
+def scrape(fn):
+    tot = {}
+    if not os.path.exists(fn):
+        return tot
+    for line in open(fn, errors="replace"):
+        m = METRIC_RE.match(line.strip())
+        if not m or m.group(3) == "NaN":
+            continue
+        name = m.group(1)
+        if re.search(r"packet|nack|jitter|rtt|loss|pli|forward|bytes", name) and not name.endswith("_bucket"):
+            tot[name] = tot.get(name, 0.0) + float(m.group(3))
+    return tot
+
+
+def metric_deltas(out, phase):
+    a = scrape(os.path.join(out, "raw", phase, "metrics-start.txt"))
+    b = scrape(os.path.join(out, "raw", phase, "metrics-end.txt"))
+    d = {k: b[k] - a.get(k, 0.0) for k in b}
+    res = {}
+    for k, v in d.items():
+        if k.endswith("_sum") and k[:-4] + "_count" in d and d[k[:-4] + "_count"] > 0:
+            res[k[:-4] + " (avg)"] = v / d[k[:-4] + "_count"]
+        elif not k.endswith("_count") and not k.endswith("_sum") and v != 0:
+            res[k] = v
+    return res
+
+
 def load_samples(out):
     rows = []
     with open(os.path.join(out, "raw", "samples.csv")) as f:
@@ -23,8 +63,20 @@ def load_samples(out):
 
 
 def load_phases(out):
+    # the mapping text may contain commas: first 4 and last 5 fields are fixed, the middle is the mapping
+    keys = ["name", "N", "pattern", "rooms"]
+    tail = ["start", "end", "mstart", "mend", "srv_errors"]
+    out_rows = []
     with open(os.path.join(out, "raw", "phases.csv")) as f:
-        return list(csv.DictReader(f))
+        for i, line in enumerate(f):
+            parts = line.rstrip("\n").split(",")
+            if i == 0 or len(parts) < 10:
+                continue
+            row = dict(zip(keys, parts[:4]))
+            row.update(dict(zip(tail, parts[-5:])))
+            row["mapping"] = ",".join(parts[4:-5])
+            out_rows.append(row)
+    return out_rows
 
 
 def intervals(rows, t0, t1):
@@ -64,9 +116,11 @@ def lk_summary(out, phase):
     kbps = 0.0
     worst_loss = 0.0
     warn = 0
+    connect_fail = 0
     files = sorted(glob.glob(os.path.join(out, "raw", phase, "*.txt")))
     for fn in files:
         txt = open(fn, errors="replace").read()
+        connect_fail += len(re.findall(r"could not connect", txt))
         warn += len(re.findall(r"could not connect|failed|error", txt, re.I)) - txt.count("Error")  # header word
         total = [l for l in txt.splitlines() if re.search(r"(^|[│|\s])Total([│|\s]|$)", l)]
         if not total:
@@ -89,7 +143,7 @@ def lk_summary(out, phase):
             errs += int(nums[-1])
     return {"files": len(files), "tracks": tracks, "expected": expected, "rx_kbps": kbps,
             "dropped_pkts": dropped_pk, "worst_room_loss_pct": worst_loss, "tester_errors": errs,
-            "warn_lines": max(0, warn)}
+            "warn_lines": max(0, warn), "connect_failures": connect_fail}
 
 
 def phase_stats(out, rows, p):
@@ -111,6 +165,7 @@ def phase_stats(out, rows, p):
 
 
 def gate(out, prefix):
+    set_ncpu(out)
     rows = load_samples(out)
     ok = True
     for p in load_phases(out):
@@ -124,6 +179,7 @@ def gate(out, prefix):
 
 
 def report(out):
+    set_ncpu(out)
     rows = load_samples(out)
     phases = load_phases(out)
     stats = [phase_stats(out, rows, p) for p in phases]
@@ -142,7 +198,7 @@ def report(out):
          "Runner CPU = whole machine busy, % of one core (" + str(NCPU) + " cores = " + str(NCPU * 100) + "%); "
          "runner minus server is roughly the generator + sampler.", "",
          "| N | pattern | rooms | mapping per room | srv CPU avg/max % | mem avg/max MB | lo Mbit/s | UDP pps in/out "
-         "| UDP err | tracks rx/expected | rx kbit/s (sum) | dropped pkts (worst room %) | tester errors | runner CPU avg/max % |",
+         "| UDP err | tracks rx/expected | rx kbit/s (sum) | dropped pkts (worst room %) | tester errors / connect failures | runner CPU avg/max % |",
          "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for s in stats:
         if not s["name"].startswith("cap-"):
@@ -150,7 +206,7 @@ def report(out):
         L.append(f"| {s['N']} | {s['pattern']} | {s['rooms']} | {s['mapping']} | {s['srv_cpu_avg']:.0f} / {s['srv_cpu_max']:.0f} "
                  f"| {s['mem_avg']:.0f} / {s['mem_max']:.0f} | {s['lo_mbit']:.1f} | {s['udp_in_pps']:.0f} / {s['udp_out_pps']:.0f} "
                  f"| {s['udp_err']} | {s['tracks']}/{s['expected']} | {s['rx_kbps']:.0f} | {s['dropped_pkts']} ({s['worst_room_loss_pct']:.2f}%) "
-                 f"| {s['tester_errors']} | {s['runner_cpu_avg']:.0f} / {s['runner_cpu_max']:.0f} |")
+                 f"| {s['tester_errors']} / {s['connect_failures']} | {s['runner_cpu_avg']:.0f} / {s['runner_cpu_max']:.0f} |")
     other = [s for s in stats if not s["name"].startswith("cap-")]
     if other:
         L += ["", "## TURN and impairment phases", "",
@@ -160,6 +216,11 @@ def report(out):
             L.append(f"| {s['name']} | {s['rooms']} | {s['mapping']} | {s['srv_cpu_avg']:.0f} / {s['srv_cpu_max']:.0f} | {s['lo_mbit']:.1f} "
                      f"| {s['d0_mbit']:.2f} | {s['udp_in_pps']:.0f} / {s['udp_out_pps']:.0f} | {s['tracks']}/{s['expected']} "
                      f"| {s['dropped_pkts']} ({s['worst_room_loss_pct']:.2f}%) | {s['tester_errors']} | {s['runner_cpu_avg']:.0f} |")
+    L += ["", "## Server-side RTP metrics (Prometheus, delta over each whole phase; counters summed over labels)", ""]
+    for s in stats:
+        md = metric_deltas(out, s["name"])
+        if md:
+            L.append(f"- **{s['name']}**: " + "; ".join(f"{k}={v:.4g}" for k, v in sorted(md.items())))
     for extra in ("turn-evidence.txt", "perm.json", "impairment.txt"):
         fn = os.path.join(out, "raw", extra)
         if os.path.exists(fn):

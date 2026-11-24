@@ -1,5 +1,6 @@
 # Throwaway livekit-server config for the isolated GitHub-runner benchmark (dev keys only, never production).
 port: 7880
+prometheus_port: 6789
 rtc:
   tcp_port: 7881
   port_range_start: 50000

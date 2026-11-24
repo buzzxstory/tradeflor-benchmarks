@@ -3,9 +3,10 @@
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 OUT=${OUT:-$PWD/poc-out}
-DUR=${DUR:-70}          # seconds each lk load-test runs
+DUR=${DUR:-80}          # seconds each lk load-test runs
 WIN_START=${WIN_START:-25}  # measurement window inside each phase (skips joins/ramp)
-WIN_END=${WIN_END:-65}
+WIN_END=${WIN_END:-75}
+STAGGER=${STAGGER:-0.25}   # seconds between room starts (avoids an unrealistic join storm)
 SRV_IMG=livekit/livekit-server@sha256:89ca9ce0791e18d6e03bf6e2c49ceb27e1c754eae8bd50c989386c1a5963791a
 CLI_IMG=livekit/livekit-cli@sha256:25b750bc0ad2045d96e06801a7215968bcbe41dc3f3c42bb75fa1787a80d5328
 mkdir -p "$OUT/raw" "$OUT/bin" "$OUT/cfg"
@@ -58,6 +59,7 @@ start_server() {
   CID=$(docker inspect -f '{{.Id}}' lk)
   CG=$(find /sys/fs/cgroup -maxdepth 3 -type d -name "docker-$CID.scope" | head -1)
   [ -n "$CG" ] || CG=$(find /sys/fs/cgroup -maxdepth 4 -type d -name "$CID" | head -1)
+  echo "$CG" > "$RAW/.cgroup"
   log "server up, cgroup=$CG limits: $(docker inspect -f 'NanoCpus={{.HostConfig.NanoCpus}} Memory={{.HostConfig.Memory}} CpuShares={{.HostConfig.CpuShares}}' lk)"
 }
 start_server
@@ -68,6 +70,7 @@ echo "ts,cg_usec,cg_mem,lo_rx,d0_rx,udp_in,udp_out,udp_inerr,udp_rcvbuf,udp_sndb
 sampler() {
   while [ -f "$RAW/.sampling" ]; do
     ts=$(date +%s.%N)
+    CG=$(cat "$RAW/.cgroup")
     u=$(awk '/^usage_usec/{print $2}' "$CG/cpu.stat" 2>/dev/null || echo 0)
     m=$(cat "$CG/memory.current" 2>/dev/null || echo 0)
     lo=$(awk '/^ *lo:/{sub(/^ *lo:/,""); split($0,a," "); print a[1]}' /proc/net/dev)
@@ -88,18 +91,22 @@ run_phase() {
   local name=$1 n=$2 pattern=$3 rooms=$4 pubs=$5 subs=$6 mapping=$7
   mkdir -p "$RAW/$name"
   local t0; t0=$(date +%s.%N); local since; since=$(date -u +%Y-%m-%dT%H:%M:%S)
+  curl -fs http://127.0.0.1:6789/metrics > "$RAW/$name/metrics-start.txt" 2>/dev/null
   log "phase $name: N=$n rooms=$rooms pubs=$pubs subs=$subs"
   local pids=(); HOOK_PIDS=""
   for i in $(seq 1 "$rooms"); do
     "$LK" --url ws://127.0.0.1:7880 --api-key devkey --api-secret secret perf load-test --room "$name-r$i" \
-      --audio-publishers "$pubs" --subscribers "$subs" --duration "${DUR}s" --num-per-second 10 \
+      --audio-publishers "$pubs" --subscribers "$subs" --duration "${DUR}s" --num-per-second 10 --layout 3x3 \
       > "$RAW/$name/r$i.txt" 2>&1 & pids+=($!)
+    sleep "$STAGGER"
   done
   [ -n "${PHASE_HOOK:-}" ] && eval "$PHASE_HOOK"
   wait "${pids[@]}" ${HOOK_PIDS:-}
   local t1; t1=$(date +%s.%N)
+  curl -fs http://127.0.0.1:6789/metrics > "$RAW/$name/metrics-end.txt" 2>/dev/null
   local e; e=$(docker logs --since "$since" lk 2>&1 | grep -cE '\bERROR\b|"level":"error"')
-  awk -v a="$t0" -v b="$t1" -v s="$WIN_START" -v w="$WIN_END" -v nm="$name" -v N="$n" -v p="$pattern" -v r="$rooms" -v mp="$mapping" -v e="$e" \
+  local ws; ws=$(awk -v r="$rooms" -v s="$STAGGER" -v w="$WIN_START" 'BEGIN{x=r*s+15; print (x>w?x:w)}')
+  awk -v a="$t0" -v b="$t1" -v s="$ws" -v w="$WIN_END" -v nm="$name" -v N="$n" -v p="$pattern" -v r="$rooms" -v mp="$mapping" -v e="$e" \
     'BEGIN{ms=a+s; me=a+w; if(me>b) me=b; printf "%s,%s,%s,%s,%s,%.3f,%.3f,%.3f,%.3f,%s\n", nm,N,p,r,mp,a,b,ms,me,e}' >> "$RAW/phases.csv"
   sleep 8
 }
@@ -133,16 +140,16 @@ turn_subs() { # rooms prefix -> starts bridge-network subscriber containers
   HOOK_PIDS=""
   for i in $(seq 1 "$1"); do
     docker run --rm --add-host turn.poc.local:host-gateway "$CLI_IMG" --url "ws://$GW:7880" --api-key devkey --api-secret secret \
-      perf load-test --room "$2-r$i" --subscribers 2 --duration "$((DUR - 5))s" > "$RAW/$2/bridge-r$i.txt" 2>&1 &
+      perf load-test --room "$2-r$i" --subscribers 2 --layout 3x3 --duration "$((DUR - 5))s" > "$RAW/$2/bridge-r$i.txt" 2>&1 &
     HOOK_PIDS="$HOOK_PIDS $!"
   done
 }
 TR=5
 mkdir -p "$RAW/turn-direct" "$RAW/turn-relayed"
 PHASE_HOOK='sleep 3; turn_subs $TR turn-direct' run_phase turn-direct 40 turn "$TR" 2 4 "2 pub + 4 sub host + 2 sub in docker bridge, direct UDP"
-sudo iptables -I INPUT 1 -s "$SUBNET" -p udp --dport 3479 -j ACCEPT
-sudo iptables -I INPUT 2 -s "$SUBNET" -p udp -j DROP
-sudo iptables -I INPUT 3 -s "$SUBNET" -p tcp --dport 7881 -j DROP
+sudo iptables -I INPUT 1 -i docker0 -s "$SUBNET" -p udp --dport 3479 -j ACCEPT
+sudo iptables -I INPUT 2 -i docker0 -s "$SUBNET" -p udp -j DROP
+sudo iptables -I INPUT 3 -i docker0 -s "$SUBNET" -p tcp --dport 7881 -j DROP
 PHASE_HOOK='sleep 3; turn_subs $TR turn-relayed' run_phase turn-relayed 40 turn "$TR" 2 4 "2 pub + 4 sub host + 2 sub in docker bridge, direct UDP+TCP7881 blocked => TURN/UDP 3479 only"
 {
   echo "bridge gateway $GW subnet $SUBNET"
